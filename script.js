@@ -9,33 +9,17 @@ const DB = {
   id() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 };
 
-// Seed demo data if empty
+// Initialize empty data stores on first visit
 function seedIfEmpty() {
   if (DB.get('seeded', false)) return;
-  DB.set('products', [
-    { id: DB.id(), name: 'Product A', price: 500, gstRate: 18, stock: 50 },
-    { id: DB.id(), name: 'Product B', price: 1200, gstRate: 12, stock: 30 },
-    { id: DB.id(), name: 'Product C', price: 250, gstRate: 5, stock: 100 },
-    { id: DB.id(), name: 'Service X', price: 3000, gstRate: 18, stock: 999 },
-  ]);
-  DB.set('sales', [
-    { id: DB.id(), items: [{name:'Product A',qty:2,price:500,gstRate:18,itemTotal:1000,itemGST:180}], total:1000, gst:180, finalTotal:1180, date: new Date(Date.now()-86400000*2).toISOString(), customer: 'Walk-in' },
-    { id: DB.id(), items: [{name:'Product B',qty:1,price:1200,gstRate:12,itemTotal:1200,itemGST:144}], total:1200, gst:144, finalTotal:1344, date: new Date(Date.now()-86400000).toISOString(), customer: 'Walk-in' },
-  ]);
-  DB.set('expenses', [
-    { id: DB.id(), name: 'Office Rent', amount: 5000, date: new Date().toISOString().split('T')[0], category: 'Rent' },
-    { id: DB.id(), name: 'Electricity', amount: 1200, date: new Date().toISOString().split('T')[0], category: 'Utilities' },
-  ]);
-  DB.set('customers', [
-    { id: DB.id(), name: 'Rahul Sharma', phone: '9876543210', pendingAmount: 2500, city: 'Delhi' },
-    { id: DB.id(), name: 'Priya Singh', phone: '9988776655', pendingAmount: 0, city: 'Mumbai' },
-  ]);
-  DB.set('suppliers', [
-    { id: DB.id(), name: 'ABC Traders', phone: '9111222333', pendingAmount: 8000, city: 'Jaipur' },
-  ]);
-  DB.set('inputGST', 0);
-  DB.set('businessName', 'ChitRagupt Business');
-  DB.set('gstNumber', 'GSTIN12345678');
+  DB.set('products',  []);
+  DB.set('sales',     []);
+  DB.set('expenses',  []);
+  DB.set('customers', []);
+  DB.set('suppliers', []);
+  DB.set('inputGST',  0);
+  DB.set('businessName', '');
+  DB.set('gstNumber', '');
   DB.set('seeded', true);
 }
 
@@ -125,7 +109,7 @@ function navigate(page) {
     sales:'Sales Analytics', expenses:'Expenses Management', pl:'Profit & Loss',
     balance:'Balance Sheet', gst:'GST Dashboard', cashbook:'Bank / Cash Book',
     customers:'Customers', suppliers:'Suppliers', reports:'Reports', settings:'Settings',
-    manual:'User Manual & System Description'
+    manual:'User Manual & System Description', calculator:'Business Calculator'
   };
   document.getElementById('page-title').textContent = titles[page] || page;
   document.getElementById('topbar-actions').innerHTML = '';
@@ -1257,6 +1241,11 @@ pages.settings = function() {
         <span style="color:var(--text3)">All data is stored locally in your browser using LocalStorage. No data is sent to any server.</span>
       </div>
     </div>
+    <div class="card settings-section">
+      <div class="card-title">🔐 Account &amp; Security</div>
+      <div style="color:var(--text2);font-size:13px;margin-bottom:16px">Logout to lock the app. Your data stays safe.</div>
+      <button class="btn btn-danger" onclick="handleLogout()">🚪 Logout &amp; Lock App</button>
+    </div>
   </div>`;
 };
 
@@ -1535,19 +1524,849 @@ pages.manual = function() {
 };
 
 /* ═══════════════════════════════════════
-   LANGUAGE SWITCH
+   PAGE: DEMAND FORECAST
 ═══════════════════════════════════════ */
-window.handleLangSwitch = function() {
-  const pill = document.getElementById('lang-pill');
-  const label = document.getElementById('lang-label');
-  if (pill && pill.textContent.trim() === 'EN') {
-    // Show under development toast
-    toast('🚧 हिंदी मोड — Under Development! Coming Soon.', 'error');
+window.renderForecast = function() {
+  const sales    = DB.get('sales',   []);
+  const products = DB.get('products', []);
+
+  // ── 1. Build per-product daily sales map ─────────────────────────────────
+  const productSalesMap = {};
+  products.forEach(p => { productSalesMap[p.name] = {}; });
+
+  sales.forEach(sale => {
+    const dateStr = sale.date ? sale.date.split('T')[0] : null;
+    if (!dateStr) return;
+    (sale.items || []).forEach(item => {
+      if (!productSalesMap[item.name]) productSalesMap[item.name] = {};
+      productSalesMap[item.name][dateStr] = (productSalesMap[item.name][dateStr] || 0) + (item.qty || 0);
+    });
+  });
+
+  // ── 2. Determine date range of all sales ─────────────────────────────────
+  const allDates = sales.map(s => s.date ? s.date.split('T')[0] : null).filter(Boolean).sort();
+  const firstDate = allDates.length ? new Date(allDates[0]) : new Date();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const daySpan = Math.max(1, Math.round((today - firstDate) / 86400000) + 1);
+
+  // ── 3. For each product, compute metrics ─────────────────────────────────
+  const forecastData = products.map(product => {
+    const dailyMap  = productSalesMap[product.name] || {};
+    const totalSold = Object.values(dailyMap).reduce((a,b)=>a+b, 0);
+    const avgDaily  = totalSold / daySpan;
+
+    // Trend: compare last-7-days avg vs prior-7-days avg
+    const last7 = [], prior7 = [];
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(today); d.setDate(d.getDate() - i);
+      const ds = d.toISOString().split('T')[0];
+      const qty = dailyMap[ds] || 0;
+      if (i < 7) last7.push(qty); else prior7.push(qty);
+    }
+    const avg7  = last7.reduce((a,b)=>a+b,0)  / 7;
+    const avg14 = prior7.reduce((a,b)=>a+b,0) / 7;
+
+    let trend = 'stable', trendIcon = '→', trendColor = 'var(--text3)';
+    const diff = avg7 - avg14;
+    if (diff > 0.05)       { trend = 'rising';  trendIcon = '↑'; trendColor = 'var(--green)'; }
+    else if (diff < -0.05) { trend = 'falling'; trendIcon = '↓'; trendColor = 'var(--red)'; }
+
+    // Weighted forecast: 60% last-7-avg + 40% overall-avg
+    const forecastDaily = avg7 > 0 ? (avg7 * 0.6 + avgDaily * 0.4) : avgDaily;
+    const demand7  = Math.ceil(forecastDaily * 7);
+    const demand30 = Math.ceil(forecastDaily * 30);
+    const currentStock = product.stock || 0;
+
+    return {
+      name: product.name,
+      stock: currentStock,
+      avgDaily,
+      trend, trendIcon, trendColor,
+      demand7, demand30,
+      reorderAlert7:  currentStock < demand7,
+      reorderAlert30: currentStock < demand30,
+      totalSold,
+    };
+  });
+
+  const alertCount = forecastData.filter(f => f.reorderAlert7).length;
+
+  // ── 4. Render ─────────────────────────────────────────────────────────────
+  const el = document.getElementById('content');
+  el.innerHTML = `
+  <div class="stats-grid" style="margin-bottom:24px;">
+    <div class="stat-card blue">
+      <div class="stat-icon">📦</div>
+      <div class="stat-label">Products Tracked</div>
+      <div class="stat-val">${products.length}</div>
+      <div class="stat-sub">in inventory</div>
+    </div>
+    <div class="stat-card ${alertCount > 0 ? 'red' : 'green'}">
+      <div class="stat-icon">🚨</div>
+      <div class="stat-label">Reorder Alerts (7d)</div>
+      <div class="stat-val" style="color:${alertCount>0?'var(--red)':'var(--green)'}">${alertCount}</div>
+      <div class="stat-sub">${alertCount>0?'products need restocking':'all stocks sufficient'}</div>
+    </div>
+    <div class="stat-card orange">
+      <div class="stat-icon">🔮</div>
+      <div class="stat-label">Forecast Horizon</div>
+      <div class="stat-val" style="font-size:18px;">7 / 30d</div>
+      <div class="stat-sub">based on ${daySpan} days of data</div>
+    </div>
+    <div class="stat-card purple">
+      <div class="stat-icon">📈</div>
+      <div class="stat-label">Rising Products</div>
+      <div class="stat-val" style="color:var(--purple)">${forecastData.filter(f=>f.trend==='rising').length}</div>
+      <div class="stat-sub">demand trending up</div>
+    </div>
+  </div>
+
+  ${alertCount > 0 ? `
+  <div style="background:rgba(192,57,43,0.08);border:1.5px solid rgba(192,57,43,0.30);border-radius:var(--radius-lg);padding:14px 20px;margin-bottom:20px;display:flex;align-items:center;gap:14px;">
+    <span style="font-size:24px;">🚨</span>
+    <div>
+      <div style="font-family:var(--font-head);font-weight:700;color:var(--red);font-size:14px;">Reorder Alert — ${alertCount} Product${alertCount>1?'s':''} Running Low</div>
+      <div style="font-size:12px;color:var(--text2);margin-top:3px;">
+        ${forecastData.filter(f=>f.reorderAlert7).map(f=>`<strong>${f.name}</strong> (stock: ${f.stock}, need ${f.demand7} in 7d)`).join(' &nbsp;·&nbsp; ')}
+      </div>
+    </div>
+  </div>` : ''}
+
+  <div class="card" style="margin-bottom:24px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div class="card-title" style="margin-bottom:0;">📊 Product Demand Forecast</div>
+      <div style="font-size:11px;color:var(--text3);font-family:var(--font-mono);">Trend = last 7d vs prior 7d · weighted moving avg</div>
+    </div>
+    <div class="table-wrap">
+      <table id="forecast-table">
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Current Stock</th>
+            <th>Avg Daily Sales</th>
+            <th>Trend</th>
+            <th>Predicted (7d)</th>
+            <th>Predicted (30d)</th>
+            <th>7d Status</th>
+            <th>30d Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${forecastData.map(f=>`
+          <tr>
+            <td style="font-weight:600;color:var(--royal-blue);">${f.name}</td>
+            <td class="mono">${f.stock} units</td>
+            <td class="mono">${f.avgDaily.toFixed(2)}/day</td>
+            <td>
+              <span style="font-size:18px;font-weight:700;color:${f.trendColor};">${f.trendIcon}</span>
+              <span style="font-size:12px;color:${f.trendColor};margin-left:4px;text-transform:capitalize;">${f.trend}</span>
+            </td>
+            <td class="mono" style="font-weight:600;">${f.demand7} units</td>
+            <td class="mono" style="font-weight:600;">${f.demand30} units</td>
+            <td>${f.reorderAlert7
+              ? '<span class="badge badge-red">⚠ Reorder Now</span>'
+              : '<span class="badge badge-green">✔ Sufficient</span>'}</td>
+            <td>${f.reorderAlert30
+              ? '<span class="badge badge-yellow">⚠ Plan Reorder</span>'
+              : '<span class="badge badge-green">✔ Sufficient</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div style="margin-bottom:8px;font-family:var(--font-head);font-size:13px;font-weight:700;color:var(--royal-blue);text-transform:uppercase;letter-spacing:0.5px;">📦 Per-Product Breakdown</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin-bottom:24px;">
+    ${forecastData.map(f=>{
+      const pct7 = f.demand7>0 ? Math.min(100,Math.round((f.stock/f.demand7)*100)) : 100;
+      const barColor = pct7>=100?'var(--green)':pct7>=50?'var(--yellow)':'var(--red)';
+      return `
+      <div class="card" style="padding:16px;border-top:3px solid ${f.reorderAlert7?'var(--red)':'var(--royal-blue)'};">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;">
+          <div style="font-family:var(--font-head);font-size:13px;font-weight:700;color:var(--royal-blue);">${f.name}</div>
+          <span style="font-size:20px;color:${f.trendColor};">${f.trendIcon}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+          <div style="background:var(--surface2);border-radius:8px;padding:8px 10px;">
+            <div style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;">Stock</div>
+            <div style="font-size:16px;font-weight:700;color:var(--royal-blue);font-family:var(--font-head);">${f.stock}</div>
+          </div>
+          <div style="background:var(--surface2);border-radius:8px;padding:8px 10px;">
+            <div style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;">Avg/Day</div>
+            <div style="font-size:16px;font-weight:700;color:var(--royal-blue);font-family:var(--font-head);">${f.avgDaily.toFixed(1)}</div>
+          </div>
+          <div style="background:var(--surface2);border-radius:8px;padding:8px 10px;">
+            <div style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;">Need (7d)</div>
+            <div style="font-size:16px;font-weight:700;color:${f.reorderAlert7?'var(--red)':'var(--green)'};font-family:var(--font-head);">${f.demand7}</div>
+          </div>
+          <div style="background:var(--surface2);border-radius:8px;padding:8px 10px;">
+            <div style="font-size:10px;color:var(--text3);font-family:var(--font-mono);text-transform:uppercase;">Need (30d)</div>
+            <div style="font-size:16px;font-weight:700;color:${f.reorderAlert30?'var(--yellow)':'var(--green)'};font-family:var(--font-head);">${f.demand30}</div>
+          </div>
+        </div>
+        <div style="margin-bottom:6px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:4px;">
+            <span>Stock vs 7d Demand</span><span>${pct7}%</span>
+          </div>
+          <div style="background:var(--surface3);border-radius:20px;height:7px;overflow:hidden;">
+            <div style="width:${pct7}%;background:${barColor};height:100%;border-radius:20px;transition:width 0.5s;"></div>
+          </div>
+        </div>
+        ${f.reorderAlert7
+          ? `<div style="margin-top:8px;font-size:11px;color:var(--red);font-weight:600;background:rgba(192,57,43,0.08);border-radius:6px;padding:5px 8px;">⚠ Shortfall of ${Math.max(0,f.demand7-f.stock)} units — reorder now</div>`
+          : `<div style="margin-top:8px;font-size:11px;color:var(--green);font-weight:600;background:rgba(26,122,74,0.07);border-radius:6px;padding:5px 8px;">✔ Sufficient for 7-day demand</div>`
+        }
+      </div>`;
+    }).join('')}
+  </div>
+
+  <div style="background:rgba(32,60,116,0.04);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:24px;">
+    <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--royal-blue);margin-bottom:6px;">ℹ️ How Forecasting Works</div>
+    <ul style="list-style:none;padding:0;margin:0;font-size:12px;color:var(--text2);line-height:2.0;">
+      <li>› <strong>Avg Daily Sales</strong> = Total units sold ÷ Days since first sale</li>
+      <li>› <strong>Trend</strong> = Last-7-day average vs prior-7-day average &nbsp;(↑ Rising &nbsp;/ ↓ Falling &nbsp;/ → Stable)</li>
+      <li>› <strong>Demand Prediction</strong> = Weighted avg: 60% last-7-day rate + 40% overall rate, multiplied by 7 or 30</li>
+      <li>› <strong>Reorder Alert</strong> = Triggered when current stock &lt; predicted demand for that period</li>
+    </ul>
+  </div>`;
+};
+
+pages.forecast = function() {
+  renderForecast();
+};
+
+/* stub handleLangSwitch removed — full version below from enhanced file */
+
+/* ═══════════════════════════════════════
+   LOGIN SYSTEM
+═══════════════════════════════════════ */
+(function initLoginSystem() {
+  const isLoggedIn = localStorage.getItem('bl_loggedIn') === 'true';
+  const userData = (() => { try { return JSON.parse(localStorage.getItem('bl_user')) || null; } catch { return null; } })();
+
+  const loginScreen = document.getElementById('login-screen');
+  const registerView = document.getElementById('login-register-view');
+  const pinView = document.getElementById('login-pin-view');
+
+  if (isLoggedIn) {
+    // Already logged in — hide screen immediately
+    loginScreen.classList.add('hidden');
+    return;
+  }
+
+  if (userData && userData.pin) {
+    // Returning user — show PIN entry
+    registerView.style.display = 'none';
+    pinView.style.display = 'block';
+    document.getElementById('login-biz-name').textContent = userData.businessName || 'Welcome Back!';
+    document.getElementById('login-owner-name').textContent = (userData.ownerName ? 'Hello, ' + userData.ownerName + '!' : '') + ' Enter your PIN to continue.';
+    setTimeout(() => document.getElementById('login-pin').focus(), 100);
   } else {
-    pill.textContent = 'EN';
-    label.textContent = 'English';
+    // First time — show registration
+    registerView.style.display = 'block';
+    pinView.style.display = 'none';
+    setTimeout(() => document.getElementById('reg-biz').focus(), 100);
+  }
+})();
+
+window.handleRegister = function() {
+  const biz = document.getElementById('reg-biz').value.trim();
+  const owner = document.getElementById('reg-owner').value.trim();
+  const pin = document.getElementById('reg-pin').value.trim();
+  const errEl = document.getElementById('reg-error');
+  errEl.textContent = '';
+  if (!biz) { errEl.textContent = 'Please enter your business name.'; return; }
+  if (!owner) { errEl.textContent = 'Please enter the owner name.'; return; }
+  if (!/^\d{4}$/.test(pin)) { errEl.textContent = 'PIN must be exactly 4 digits.'; return; }
+  localStorage.setItem('bl_user', JSON.stringify({ businessName: biz, ownerName: owner, pin: pin }));
+  localStorage.setItem('bl_loggedIn', 'true');
+  // Also seed business name into app settings
+  DB.set('businessName', biz);
+  document.getElementById('login-screen').classList.add('hidden');
+  toast('🎉 Welcome, ' + owner + '! Account created.');
+};
+
+window.handleLogin = function() {
+  const pin = document.getElementById('login-pin').value.trim();
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  let userData = null;
+  try { userData = JSON.parse(localStorage.getItem('bl_user')); } catch {}
+  if (!userData || !userData.pin) { errEl.textContent = 'No account found. Please refresh.'; return; }
+  if (pin !== userData.pin) { errEl.textContent = '❌ Incorrect PIN. Please try again.'; document.getElementById('login-pin').value = ''; document.getElementById('login-pin').focus(); return; }
+  localStorage.setItem('bl_loggedIn', 'true');
+  document.getElementById('login-screen').classList.add('hidden');
+  toast('✅ Welcome back, ' + (userData.ownerName || 'User') + '!');
+};
+
+window.handleLogout = function() {
+  if (!confirm('Logout and lock the app?')) return;
+  localStorage.setItem('bl_loggedIn', 'false');
+  toast('Logged out. Reloading…', 'error');
+  setTimeout(() => location.reload(), 900);
+};
+
+/* ═══════════════════════════════════════
+   PAGE: CALCULATOR
+═══════════════════════════════════════ */
+pages.calculator = function() {
+  document.getElementById('page-title').textContent = 'Business Calculator';
+  document.getElementById('content').innerHTML = `
+  <div style="max-width:680px">
+    <div class="calc-tabs">
+      <div class="calc-tab active" onclick="switchCalcTab('gst',this)">🧾 GST Calculator</div>
+      <div class="calc-tab" onclick="switchCalcTab('margin',this)">📈 Profit Margin</div>
+      <div class="calc-tab" onclick="switchCalcTab('reorder',this)">📦 Reorder Quantity</div>
+    </div>
+
+    <!-- GST Calculator -->
+    <div class="calc-panel active" id="calc-gst">
+      <div class="card">
+        <div class="card-title">🧾 GST Calculator</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:20px;">Calculate GST on any amount. Supports inclusive and exclusive modes.</p>
+        <div class="form-row">
+          <div class="calc-input-group" style="flex:1">
+            <label>Amount (₹)</label>
+            <input type="number" id="gst-amount" placeholder="e.g. 1000" min="0" oninput="calcGST()">
+          </div>
+          <div class="calc-input-group" style="flex:1">
+            <label>GST Rate (%)</label>
+            <select id="gst-rate" onchange="calcGST()">
+              <option value="0">0% (Exempt)</option>
+              <option value="5">5%</option>
+              <option value="12" selected>12%</option>
+              <option value="18">18%</option>
+              <option value="28">28%</option>
+            </select>
+          </div>
+          <div class="calc-input-group" style="flex:1">
+            <label>Mode</label>
+            <select id="gst-mode" onchange="calcGST()">
+              <option value="exclusive">Exclusive (Add GST)</option>
+              <option value="inclusive">Inclusive (Extract GST)</option>
+            </select>
+          </div>
+        </div>
+        <div class="calc-result-box" id="gst-result" style="display:none">
+          <div class="calc-result-row"><span>Base Amount</span><span class="val" id="gst-base">—</span></div>
+          <div class="calc-result-row"><span>CGST (<span id="gst-half-lbl">9</span>%)</span><span class="val" id="gst-cgst">—</span></div>
+          <div class="calc-result-row"><span>SGST (<span id="gst-half-lbl2">9</span>%)</span><span class="val" id="gst-sgst">—</span></div>
+          <div class="calc-result-row"><span>Total GST</span><span class="val" id="gst-total-gst">—</span></div>
+          <div class="calc-result-row total"><span>Final Amount (with GST)</span><span class="val" id="gst-final">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Profit Margin Calculator -->
+    <div class="calc-panel" id="calc-margin">
+      <div class="card">
+        <div class="card-title">📈 Profit Margin Calculator</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:20px;">Find out your profit amount and margin % from cost and selling price.</p>
+        <div class="form-row">
+          <div class="calc-input-group" style="flex:1">
+            <label>Cost Price (₹)</label>
+            <input type="number" id="pm-cost" placeholder="e.g. 600" min="0" oninput="calcMargin()">
+          </div>
+          <div class="calc-input-group" style="flex:1">
+            <label>Selling Price (₹)</label>
+            <input type="number" id="pm-sell" placeholder="e.g. 900" min="0" oninput="calcMargin()">
+          </div>
+        </div>
+        <div class="calc-input-group">
+          <label>GST Rate on Sale (%) — Optional</label>
+          <select id="pm-gst" onchange="calcMargin()">
+            <option value="0">0% (No GST)</option>
+            <option value="5">5%</option>
+            <option value="12">12%</option>
+            <option value="18" selected>18%</option>
+            <option value="28">28%</option>
+          </select>
+        </div>
+        <div class="calc-result-box" id="margin-result" style="display:none">
+          <div class="calc-result-row"><span>Cost Price</span><span class="val" id="pm-r-cost">—</span></div>
+          <div class="calc-result-row"><span>Selling Price (excl. GST)</span><span class="val" id="pm-r-sell">—</span></div>
+          <div class="calc-result-row"><span>GST Amount</span><span class="val" id="pm-r-gst">—</span></div>
+          <div class="calc-result-row"><span>Gross Profit</span><span class="val" id="pm-r-profit">—</span></div>
+          <div class="calc-result-row"><span>Profit Margin %</span><span class="val" id="pm-r-margin">—</span></div>
+          <div class="calc-result-row"><span>Markup %</span><span class="val" id="pm-r-markup">—</span></div>
+          <div class="calc-result-row total"><span>Customer Pays (incl. GST)</span><span class="val" id="pm-r-final">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reorder Quantity Calculator -->
+    <div class="calc-panel" id="calc-reorder">
+      <div class="card">
+        <div class="card-title">📦 Reorder Quantity Calculator</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:20px;">Calculate the optimal reorder point and Economic Order Quantity (EOQ).</p>
+        <div class="form-row">
+          <div class="calc-input-group" style="flex:1">
+            <label>Daily Sales (units/day)</label>
+            <input type="number" id="rq-daily" placeholder="e.g. 20" min="0" oninput="calcReorder()">
+          </div>
+          <div class="calc-input-group" style="flex:1">
+            <label>Lead Time (days)</label>
+            <input type="number" id="rq-lead" placeholder="e.g. 5" min="0" oninput="calcReorder()">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="calc-input-group" style="flex:1">
+            <label>Safety Stock (units)</label>
+            <input type="number" id="rq-safety" placeholder="e.g. 50" min="0" oninput="calcReorder()">
+          </div>
+          <div class="calc-input-group" style="flex:1">
+            <label>Annual Demand (units)</label>
+            <input type="number" id="rq-annual" placeholder="e.g. 7300" min="0" oninput="calcReorder()">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="calc-input-group" style="flex:1">
+            <label>Ordering Cost per Order (₹)</label>
+            <input type="number" id="rq-order-cost" placeholder="e.g. 500" min="0" oninput="calcReorder()">
+          </div>
+          <div class="calc-input-group" style="flex:1">
+            <label>Holding Cost per Unit/Year (₹)</label>
+            <input type="number" id="rq-hold" placeholder="e.g. 20" min="0" oninput="calcReorder()">
+          </div>
+        </div>
+        <div class="calc-result-box" id="reorder-result" style="display:none">
+          <div class="calc-result-row"><span>Reorder Point (ROP)</span><span class="val" id="rq-r-rop">—</span></div>
+          <div class="calc-result-row"><span>Safety Stock</span><span class="val" id="rq-r-safety">—</span></div>
+          <div class="calc-result-row"><span>Avg Stock During Lead Time</span><span class="val" id="rq-r-avg">—</span></div>
+          <div class="calc-result-row"><span>EOQ (Economic Order Qty)</span><span class="val" id="rq-r-eoq">—</span></div>
+          <div class="calc-result-row total"><span>Orders Per Year</span><span class="val" id="rq-r-orders">—</span></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+};
+
+window.switchCalcTab = function(tab, el) {
+  document.querySelectorAll('.calc-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.calc-panel').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('calc-' + tab).classList.add('active');
+};
+
+window.calcGST = function() {
+  const amount = parseFloat(document.getElementById('gst-amount').value) || 0;
+  const rate = parseFloat(document.getElementById('gst-rate').value) || 0;
+  const mode = document.getElementById('gst-mode').value;
+  const result = document.getElementById('gst-result');
+  if (amount <= 0) { result.style.display = 'none'; return; }
+  result.style.display = 'block';
+  let base, gstAmt, final;
+  if (mode === 'exclusive') {
+    base = amount;
+    gstAmt = base * rate / 100;
+    final = base + gstAmt;
+  } else {
+    final = amount;
+    base = amount / (1 + rate / 100);
+    gstAmt = final - base;
+  }
+  const half = rate / 2;
+  document.getElementById('gst-half-lbl').textContent = half;
+  document.getElementById('gst-half-lbl2').textContent = half;
+  document.getElementById('gst-base').textContent = fmt(base);
+  document.getElementById('gst-cgst').textContent = fmt(gstAmt / 2);
+  document.getElementById('gst-sgst').textContent = fmt(gstAmt / 2);
+  document.getElementById('gst-total-gst').textContent = fmt(gstAmt);
+  document.getElementById('gst-final').textContent = fmt(final);
+};
+
+window.calcMargin = function() {
+  const cost = parseFloat(document.getElementById('pm-cost').value) || 0;
+  const sell = parseFloat(document.getElementById('pm-sell').value) || 0;
+  const gstRate = parseFloat(document.getElementById('pm-gst').value) || 0;
+  const result = document.getElementById('margin-result');
+  if (cost <= 0 || sell <= 0) { result.style.display = 'none'; return; }
+  result.style.display = 'block';
+  const gstAmt = sell * gstRate / 100;
+  const finalPrice = sell + gstAmt;
+  const profit = sell - cost;
+  const margin = (profit / sell) * 100;
+  const markup = (profit / cost) * 100;
+  document.getElementById('pm-r-cost').textContent = fmt(cost);
+  document.getElementById('pm-r-sell').textContent = fmt(sell);
+  document.getElementById('pm-r-gst').textContent = fmt(gstAmt);
+  document.getElementById('pm-r-profit').textContent = fmt(profit);
+  document.getElementById('pm-r-margin').textContent = margin.toFixed(2) + '%';
+  document.getElementById('pm-r-markup').textContent = markup.toFixed(2) + '%';
+  document.getElementById('pm-r-final').textContent = fmt(finalPrice);
+};
+
+window.calcReorder = function() {
+  const daily = parseFloat(document.getElementById('rq-daily').value) || 0;
+  const lead = parseFloat(document.getElementById('rq-lead').value) || 0;
+  const safety = parseFloat(document.getElementById('rq-safety').value) || 0;
+  const annual = parseFloat(document.getElementById('rq-annual').value) || 0;
+  const orderCost = parseFloat(document.getElementById('rq-order-cost').value) || 0;
+  const hold = parseFloat(document.getElementById('rq-hold').value) || 0;
+  const result = document.getElementById('reorder-result');
+  if (daily <= 0 || lead <= 0) { result.style.display = 'none'; return; }
+  result.style.display = 'block';
+  const rop = (daily * lead) + safety;
+  const avg = daily * lead;
+  const eoq = (orderCost > 0 && hold > 0 && annual > 0)
+    ? Math.sqrt((2 * annual * orderCost) / hold)
+    : 0;
+  const ordersPerYear = eoq > 0 ? (annual / eoq) : 0;
+  document.getElementById('rq-r-rop').textContent = Math.round(rop) + ' units';
+  document.getElementById('rq-r-safety').textContent = Math.round(safety) + ' units';
+  document.getElementById('rq-r-avg').textContent = Math.round(avg) + ' units';
+  document.getElementById('rq-r-eoq').textContent = eoq > 0 ? Math.round(eoq) + ' units' : '— (fill all fields)';
+  document.getElementById('rq-r-orders').textContent = ordersPerYear > 0 ? ordersPerYear.toFixed(1) + ' orders/year' : '—';
+};
+
+/* ═══════════════════════════════════════════════════════
+   TRANSLATION OBJECT — EN / HI
+═══════════════════════════════════════════════════════ */
+const LANG = {
+  EN: {
+    pill: 'EN', label: 'English',
+    navItems: {
+      dashboard: 'Dashboard', pos: 'POS / Billing', inventory: 'Inventory',
+      sales: 'Sales Analytics', expenses: 'Expenses', pl: 'Profit & Loss',
+      balance: 'Balance Sheet', gst: 'GST Dashboard', cashbook: 'Bank / Cash Book',
+      customers: 'Customers', suppliers: 'Suppliers', reports: 'Reports',
+      manual: 'User Manual', settings: 'Settings'
+    },
+    sections: { Core: 'Core', Finance: 'Finance', 'Tax & Bank': 'Tax & Bank', CRM: 'CRM', System: 'System' },
+    pageTitle: {
+      dashboard: 'Overview Dashboard', pos: 'POS / Billing', inventory: 'Inventory',
+      sales: 'Sales Analytics', expenses: 'Expenses', pl: 'Profit & Loss',
+      balance: 'Balance Sheet', gst: 'GST Dashboard', cashbook: 'Bank / Cash Book',
+      customers: 'Customers & Suppliers', suppliers: 'Customers & Suppliers',
+      reports: 'Reports', manual: 'User Manual', settings: 'Settings'
+    }
+  },
+  HI: {
+    pill: 'HI', label: 'हिंदी',
+    navItems: {
+      dashboard: 'डैशबोर्ड', pos: 'बिलिंग', inventory: 'इन्वेंटरी',
+      sales: 'बिक्री विश्लेषण', expenses: 'खर्च', pl: 'लाभ-हानि',
+      balance: 'बैलेंस शीट', gst: 'जीएसटी डैशबोर्ड', cashbook: 'बैंक / कैश बुक',
+      customers: 'ग्राहक', suppliers: 'सप्लायर', reports: 'रिपोर्ट',
+      manual: 'उपयोगकर्ता मैनुअल', settings: 'सेटिंग्स'
+    },
+    sections: { Core: 'मुख्य', Finance: 'वित्त', 'Tax & Bank': 'कर और बैंक', CRM: 'सीआरएम', System: 'सिस्टम' },
+    pageTitle: {
+      dashboard: 'ओवरव्यू डैशबोर्ड', pos: 'बिलिंग', inventory: 'इन्वेंटरी',
+      sales: 'बिक्री विश्लेषण', expenses: 'खर्च', pl: 'लाभ-हानि',
+      balance: 'बैलेंस शीट', gst: 'जीएसटी डैशबोर्ड', cashbook: 'बैंक / कैश बुक',
+      customers: 'ग्राहक और सप्लायर', suppliers: 'ग्राहक और सप्लायर',
+      reports: 'रिपोर्ट', manual: 'उपयोगकर्ता मैनुअल', settings: 'सेटिंग्स'
+    }
   }
 };
 
+let _currentLang = 'EN';
+
+/* ── FIXED handleLangSwitch ── */
+window.handleLangSwitch = function() {
+  _currentLang = (_currentLang === 'EN') ? 'HI' : 'EN';
+  const t = LANG[_currentLang];
+  const pill = document.getElementById('lang-pill');
+  const label = document.getElementById('lang-label');
+  if (pill) pill.textContent = t.pill;
+  if (label) label.textContent = t.label;
+
+  // Update all nav items
+  document.querySelectorAll('.nav-item[data-page]').forEach(el => {
+    const page = el.getAttribute('data-page');
+    const icon = el.querySelector('.icon');
+    if (icon && t.navItems[page]) {
+      el.innerHTML = '';
+      el.appendChild(icon);
+      el.appendChild(document.createTextNode(' ' + t.navItems[page]));
+    }
+  });
+
+  // Update nav section labels
+  document.querySelectorAll('.nav-section').forEach(el => {
+    const key = el.textContent.trim();
+    // Try to find a match in the EN sections to get the canonical key
+    const enSections = LANG.EN.sections;
+    for (const [enKey, enVal] of Object.entries(enSections)) {
+      if (el.getAttribute('data-section') === enKey || el.textContent.trim() === enKey || el.textContent.trim() === LANG.HI.sections[enKey]) {
+        el.setAttribute('data-section', enKey);
+        el.textContent = t.sections[enKey] || enKey;
+        break;
+      }
+    }
+  });
+
+  // Update topbar page title for current page
+  const titleEl = document.getElementById('page-title');
+  if (titleEl) {
+    // find current active nav page
+    const active = document.querySelector('.nav-item.active');
+    if (active) {
+      const page = active.getAttribute('data-page');
+      if (t.pageTitle[page]) titleEl.textContent = t.pageTitle[page];
+    }
+  }
+  const langName = _currentLang === 'EN' ? 'English' : 'हिंदी';
+  toast(`🌐 Language: ${langName}`, 'success');
+};
+
+/* ── Tag nav-sections with data-section on load ── */
+(function tagNavSections() {
+  const enKeys = Object.keys(LANG.EN.sections);
+  document.querySelectorAll('.nav-section').forEach(el => {
+    const txt = el.textContent.trim();
+    if (enKeys.includes(txt)) el.setAttribute('data-section', txt);
+  });
+})();
+
+/* ═══════════════════════════════════════════════════════
+   CHATBOT ENGINE
+═══════════════════════════════════════════════════════ */
+(function initChatbot() {
+  const fab    = document.getElementById('cr-chat-fab');
+  const panel  = document.getElementById('cr-chat-panel');
+  const msgs   = document.getElementById('cr-chat-messages');
+  const input  = document.getElementById('cr-chat-input');
+  const sendBtn= document.getElementById('cr-chat-send');
+  const micBtn = document.getElementById('cr-chat-mic');
+
+  // Toggle panel
+  fab.addEventListener('click', () => {
+    const open = panel.classList.toggle('open');
+    fab.classList.toggle('active', open);
+    if (open && msgs.children.length === 0) botSay(
+      'नमस्ते! 👋 I\'m ChitRagupt AI. Ask me anything about your inventory, sales, or finances!\n\n' +
+      'Try: "best selling product", "total sales today", "stock of Product A", "total profit", "low stock items"'
+    );
+    if (open) setTimeout(() => input.focus(), 100);
+  });
+
+  sendBtn.addEventListener('click', handleSend);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') handleSend(); });
+
+  function handleSend() {
+    const q = input.value.trim();
+    if (!q) return;
+    userSay(q);
+    input.value = '';
+    const typing = showTyping();
+    setTimeout(() => {
+      typing.remove();
+      botSay(answerQuery(q));
+    }, 420);
+  }
+
+  function userSay(text) {
+    const div = document.createElement('div');
+    div.className = 'cr-msg user';
+    div.innerHTML = `<div class="cr-msg-bubble">${escHtml(text)}</div>`;
+    msgs.appendChild(div);
+    scrollBottom();
+  }
+
+  function botSay(text) {
+    const div = document.createElement('div');
+    div.className = 'cr-msg bot';
+    div.innerHTML = `<div class="cr-bot-icon">🤖</div><div class="cr-msg-bubble">${escHtml(text).replace(/\n/g,'<br>')}</div>`;
+    msgs.appendChild(div);
+    scrollBottom();
+  }
+
+  function showTyping() {
+    const div = document.createElement('div');
+    div.className = 'cr-msg bot';
+    div.innerHTML = `<div class="cr-bot-icon">🤖</div><div class="cr-msg-bubble cr-typing"><span></span><span></span><span></span></div>`;
+    msgs.appendChild(div);
+    scrollBottom();
+    return div;
+  }
+
+  function scrollBottom() { msgs.scrollTop = msgs.scrollHeight; }
+  function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  /* ── RULE-BASED QUERY ENGINE using Calc object ── */
+  function answerQuery(q) {
+    const lq = q.toLowerCase();
+    const products  = Calc.products();
+    const sales     = Calc.sales();
+    const expenses  = Calc.expenses();
+
+    // ── BEST SELLING PRODUCT
+    if (/best.sel|top.product|most.sold|sabse zyada|popular product/i.test(lq)) {
+      const tally = {};
+      sales.forEach(s => s.items.forEach(it => {
+        tally[it.name] = (tally[it.name] || 0) + (it.qty || 1);
+      }));
+      const sorted = Object.entries(tally).sort((a,b) => b[1]-a[1]);
+      if (!sorted.length) return '📊 No sales data yet. Complete some sales first!';
+      const [name, qty] = sorted[0];
+      const rest = sorted.slice(1,3).map(([n,q]) => `${n} (${q} units)`).join(', ');
+      return `🏆 Best selling: **${name}** with ${qty} units sold.${rest ? `\n\nRunners-up: ${rest}` : ''}`;
+    }
+
+    // ── STOCK OF A SPECIFIC PRODUCT
+    const stockMatch = lq.match(/stock\s+(?:of\s+)?(.+)|(.+)\s+(?:ka\s+)?stock|how much.+?(?:of\s+)?(.+)/i);
+    if (stockMatch && /stock|kitna|quantity|inventory/i.test(lq)) {
+      const term = (stockMatch[1] || stockMatch[2] || stockMatch[3] || '').trim().toLowerCase();
+      if (term.length > 1) {
+        const found = products.filter(p => p.name.toLowerCase().includes(term));
+        if (!found.length) return `❌ No product found matching "${term}". Check your inventory!`;
+        return found.map(p =>
+          `📦 **${p.name}**: ${p.stock} units in stock\n   Price: ₹${p.price} | GST: ${p.gstRate}%`
+        ).join('\n\n');
+      }
+    }
+
+    // ── TOTAL SALES TODAY
+    if (/today.s?|aaj|today/i.test(lq) && /sale|revenue|billing/i.test(lq)) {
+      const today = new Date().toDateString();
+      const todaySales = sales.filter(s => new Date(s.date).toDateString() === today);
+      const amt = todaySales.reduce((sum,s) => sum+s.finalTotal, 0);
+      return `📅 Today's Sales: **${fmt(amt)}** across ${todaySales.length} order(s).`;
+    }
+
+    // ── TOTAL SALES (all time)
+    if (/total.sale|overall.sale|kitna.bika|all.sale|revenue/i.test(lq)) {
+      return `💰 Total Revenue: **${fmt(Calc.totalSales())}**\n   Orders: ${Calc.totalOrders()}\n   GST Collected: ${fmt(Calc.totalGSTCollected())}`;
+    }
+
+    // ── TOTAL PROFIT
+    if (/profit|munafa|net.earning|earning/i.test(lq)) {
+      const p = Calc.profit();
+      const icon = p >= 0 ? '📈' : '📉';
+      return `${icon} Net Profit: **${fmt(p)}**\n   Revenue: ${fmt(Calc.totalSales())}\n   Expenses: ${fmt(Calc.totalExpenses())}`;
+    }
+
+    // ── TOTAL EXPENSES
+    if (/expense|kharcha|spending|cost/i.test(lq)) {
+      const byCategory = {};
+      expenses.forEach(e => { byCategory[e.category] = (byCategory[e.category]||0)+e.amount; });
+      const cats = Object.entries(byCategory).slice(0,4).map(([c,a]) => `  • ${c}: ${fmt(a)}`).join('\n');
+      return `💸 Total Expenses: **${fmt(Calc.totalExpenses())}**\n\nBy Category:\n${cats || '  (no categories)'}`;
+    }
+
+    // ── LOW STOCK / OUT OF STOCK
+    if (/low.stock|kam.stock|stock.alert|out.of.stock|reorder|khatam/i.test(lq)) {
+      const low = products.filter(p => p.stock <= 10).sort((a,b) => a.stock-b.stock);
+      if (!low.length) return '✅ All products have good stock levels (>10 units).';
+      return `⚠️ Low Stock Alert (≤10 units):\n\n` + low.map(p => `📦 ${p.name}: **${p.stock} units**`).join('\n');
+    }
+
+    // ── INVENTORY VALUE
+    if (/inventory.value|stock.value|total.inventory|saman/i.test(lq)) {
+      return `🏪 Total Inventory Value: **${fmt(Calc.inventoryValue())}**\n   Products: ${products.length}`;
+    }
+
+    // ── HOW MANY PRODUCTS
+    if (/how many product|product count|kitne product|products do/i.test(lq)) {
+      return `📦 You have **${products.length} products** in inventory.\n` + products.map(p=>`  • ${p.name} (${p.stock} units)`).join('\n');
+    }
+
+    // ── GST
+    if (/gst|tax/i.test(lq)) {
+      return `🧮 GST Summary:\n   Collected: **${fmt(Calc.totalGSTCollected())}**\n   Net Payable: ${fmt(Calc.netGST())}`;
+    }
+
+    // ── CASH BALANCE
+    if (/cash|balance|paisa|funds/i.test(lq)) {
+      return `💵 Cash Balance: **${fmt(Calc.cashBalance())}**\n   (Revenue minus Expenses)`;
+    }
+
+    // ── CUSTOMER RECEIVABLE
+    if (/customer|receivable|pending.payment|udhar/i.test(lq)) {
+      const cust = DB.get('customers',[]);
+      return `👥 Customers: **${cust.length}**\n   Total Receivable: ${fmt(Calc.totalReceivable())}`;
+    }
+
+    // ── LIST ALL PRODUCTS
+    if (/list.*product|show.*product|all product|product list/i.test(lq)) {
+      if (!products.length) return '📦 No products in inventory yet.';
+      return `📦 Products (${products.length}):\n\n` +
+        products.map(p => `  • **${p.name}** — ₹${p.price} | Stock: ${p.stock} | GST: ${p.gstRate}%`).join('\n');
+    }
+
+    // ── RECENT SALES
+    if (/recent.sale|last.sale|latest.order|order/i.test(lq)) {
+      if (!sales.length) return '📋 No sales recorded yet.';
+      const recent = [...sales].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,3);
+      return `📋 Recent Sales:\n\n` + recent.map(s =>
+        `  ${fmtShort(s.date)} — **${fmt(s.finalTotal)}** | ${s.customer || 'Walk-in'}`
+      ).join('\n');
+    }
+
+    // ── HELP
+    if (/help|kya.kar|what can|commands/i.test(lq)) {
+      return `🤖 I can answer:\n\n• "best selling product"\n• "stock of [product name]"\n• "total sales today"\n• "total profit"\n• "low stock items"\n• "total expenses"\n• "inventory value"\n• "GST summary"\n• "recent sales"\n• "list all products"\n• "customer balance"`;
+    }
+
+    // ── FALLBACK: try product name match
+    const matchedProduct = products.find(p => lq.includes(p.name.toLowerCase()));
+    if (matchedProduct) {
+      const p = matchedProduct;
+      const prodSales = sales.filter(s => s.items.some(it => it.name === p.name));
+      const unitsSold = prodSales.reduce((sum,s) => {
+        const it = s.items.find(i => i.name === p.name);
+        return sum + (it ? it.qty : 0);
+      }, 0);
+      return `📦 **${p.name}**\n   Price: ₹${p.price} | GST: ${p.gstRate}%\n   Stock: ${p.stock} units\n   Units Sold: ${unitsSold}`;
+    }
+
+    return `🤔 I didn't understand that. Try asking:\n• "best selling product"\n• "stock of Product A"\n• "total sales today"\n• "show profit"\n\nOr type "help" for all commands.`;
+  }
+
+  /* ═══════════════════════════════
+     VOICE INPUT — Web Speech API
+  ═══════════════════════════════ */
+  let recognition = null;
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  function startRecognition(targetInput, btnEl) {
+    if (!SpeechRec) {
+      toast('🎤 Voice input not supported in this browser. Try Chrome.', 'error');
+      return;
+    }
+    if (recognition) { recognition.stop(); return; }
+    recognition = new SpeechRec();
+    recognition.lang = 'en-IN';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    btnEl.classList.add('listening');
+    recognition.start();
+
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      targetInput.value = transcript;
+      targetInput.dispatchEvent(new Event('input'));
+    };
+    recognition.onerror = () => { btnEl.classList.remove('listening'); recognition = null; };
+    recognition.onend = () => { btnEl.classList.remove('listening'); recognition = null; };
+  }
+
+  // Chatbot panel mic
+  micBtn.addEventListener('click', () => startRecognition(input, micBtn));
+
+  // Topbar mic button — opens chatbot and fills input
+  const topbarMic = document.getElementById('topbar-mic-btn');
+  if (topbarMic) {
+    topbarMic.addEventListener('click', () => {
+      if (!panel.classList.contains('open')) {
+        panel.classList.add('open');
+        fab.classList.add('active');
+        if (msgs.children.length === 0) botSay(
+          'नमस्ते! 👋 I\'m ChitRagupt AI. Listening…'
+        );
+      }
+      startRecognition(input, topbarMic);
+    });
+  }
+
+})(); // end initChatbot
+
+
+/* ═══════════════════════════════════════
+   INIT — boot sequence
+═══════════════════════════════════════ */
 seedIfEmpty();
 navigate('dashboard');
